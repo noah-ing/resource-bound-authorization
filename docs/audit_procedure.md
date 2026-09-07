@@ -2,7 +2,7 @@
 
 ## Assurance target
 
-Review whether HTTP issuance verifies the registered caller and delegate quotes, and whether MCP resource calls enforce the capability's audience, object, action, principal, attenuation, and invocation proof before atomic redemption and handler dispatch. Distinguish the recommended software-TPM procedure, explicit development tests, and inert Phase A model.
+Review whether HTTP issuance verifies the registered caller and delegate quotes, and whether MCP resource calls enforce the capability's audience, object, action, principal, attenuation, and invocation proof before atomic redemption and handler dispatch. Distinguish the recommended software-TPM procedure, development request-confinement tests, and inert counterfactual model.
 
 Read [scope](scope.md) and the [threat model](threat_model.md) first. A passing command supports only the commit and configuration actually checked. Record the commit identifier, environment, commands, and results with any review report.
 
@@ -17,7 +17,8 @@ Read [scope](scope.md) and the [threat model](threat_model.md) first. A passing 
 | `src/resource_bound_authorization/attenuation.py` | Does the original principal authorize only the permitted delegate and issued action? |
 | `src/resource_bound_authorization/redemption.py` | Are all checks completed and the root identifier consumed atomically before handler invocation? |
 | `src/resource_bound_authorization/forwarding.py` | Are inbound credentials omitted and known reflected values rejected before the checked record is forwarded? |
-| `examples/unauthorized_forwarding/` | Does Phase A only evaluate a predicate over synthetic records, without network requests or resource actions? |
+| `examples/unauthorized_forwarding/` | Does the counterfactual model only evaluate synthetic records, without network requests or resource actions? |
+| `tests/test_demonstration.py` | Do real MCP calls traverse the proxy and resource with enforcement unchanged, isolating each audience check before consumption and dispatch? |
 | `examples/confined_redemption/service.py` | Does the HTTP resource route verify and consume before handler dispatch, independently of proxy checks? |
 | `examples/confined_redemption/mcp_protocol.py` | Are protocol metadata and headers validated, outer tool arguments matched to the signed invocation, and responses correlated to fresh request identifiers? |
 | `examples/confined_redemption/attestation.py` | Does enrollment determine the evidence profile, without a development fallback? |
@@ -34,6 +35,7 @@ Follow the handler call site as well as the verifier. A correct verifier is insu
 | Test | Required observation |
 | --- | --- |
 | `test_audience_mismatch_rejected` | A capability naming another resource cannot dispatch the handler. |
+| `test_audience_confinement_through_running_proxy` | The released client receives `audience_mismatch` through real proxy/resource HTTP, with zero consumption and handler count; the valid original succeeds once and replay fails. Both capability and invocation audience are checked independently. |
 | `test_token_forwarding_rejected` | The protected resource rejects the bearer-header channel; proxy tests confirm omission downstream and rejection of known reflected credentials. |
 | `test_argument_digest_mismatch_rejected` | Substituted arguments do not satisfy the capability's signed action. |
 | `test_replay_rejected` | A previously consumed capability cannot dispatch again. |
@@ -95,12 +97,18 @@ docker compose run --rm --no-deps --user 0 --cap-add CHOWN --cap-add FOWNER \
   --directory /registration --software-tpm-interface swtpm:host=software_tpm,port=2321
 docker compose run --rm --no-deps calling_principal \
   python -m examples.unauthorized_forwarding.demonstration
+docker compose run --rm --no-deps calling_principal \
+  python -m pytest -q -s -p no:cacheprovider tests/test_demonstration.py
 docker compose --profile software_tpm up --abort-on-container-exit --exit-code-from calling_principal
 ```
 
-Registration creates disposable holder and issuer keys, signed manifests, separate simulator AK contexts, and synthetic certificate enrollment. Root and the added ownership capabilities are limited to that one-shot command; running services use separate IDs and drop all capabilities. Registration refuses existing enrollment. Phase A is an abstract decision predicate. Phase B verifies caller and delegate quotes at HTTP issuance and exercises both MCP network hops.
+Registration creates disposable holder and issuer keys, signed manifests, separate simulator AK contexts, and synthetic certificate enrollment. Root and the added ownership capabilities are limited to that one-shot command; running services use separate IDs and drop all capabilities. Registration refuses existing enrollment. Phase A runs the abstract decision predicate and a separate request-confinement regression. Phase B verifies caller and delegate quotes at HTTP issuance and exercises both MCP network hops.
 
-Inspect command exit statuses and assertions. Phase A expects acceptance under its disabled predicate and rejection when record equality is required. Phase B rejects mismatched manifest evidence and a development-assurance downgrade, then rejects changed arguments without invoking the handler. The original valid request succeeds, replay fails, and explicitly attenuated delegation succeeds. The output identifies `software_tpm` assurance for both principals, MCP protocol `2026-07-28`, and three authorized handler invocations. It also checks resource-bearer rejection. An image build or health response is not evidence that this procedure passed.
+Inspect command exit statuses and assertions. The Phase A predicate expects abstract acceptance when disabled and rejection when record equality is required. Its request regression starts fresh reference services on loopback inside the test container and obtains a development-attested capability through HTTP issuance. It sends signed audience-mismatch fixtures through the real proxy and observes the downstream MCP requests. In each case, the exact audience error occurs with zero SQLite rows and zero handler invocations, followed by valid acceptance and replay rejection. It expects three tests to pass and two JSON reports with `assurance: development`, `confinement: enabled`, `resource_tool_requests: 3`, and `handler_invocations: 1`. The test services use temporary registration and storage, independently of the Compose enrollment and simulator.
+
+Review the two signed contexts separately. For capability-audience verification, only root audience claims change and are signed with the generated fixture issuer key; the invocation audience stays correct. This negative fixture shares the original identifier but is not the original claim record. For invocation-audience verification, the issued capability stays unchanged. The request observer always delegates to the original resource handler. No authorization check is replaced or disabled. The downstream bearer assertion applies to the known registered credential, not general credential provenance.
+
+Phase B rejects mismatched manifest evidence and a development-assurance downgrade, then rejects changed arguments without invoking the handler. The original valid request succeeds, replay fails, and explicitly attenuated delegation succeeds. The output identifies `software_tpm` assurance for both principals, MCP protocol `2026-07-28`, and three authorized handler invocations. It also checks resource-bearer rejection. An image build or health response is not evidence that this procedure passed.
 
 The quote verifier checks the expected composite PCR digest and qualifying data under the enrolled AK. This does not establish independent PCR-selection appraisal, physical TPM provenance, key residency, or manifest execution. The MCP SDK checks establish the implemented transport and tool profile, not OAuth or full MCP conformance.
 
@@ -122,4 +130,4 @@ Inspect distributable files for generated keys, local databases, private reports
 
 ## Interpretation
 
-A passing integrated run supports enrolled software-TPM evidence at HTTP issuance and MCP resource-side confinement and atomic consumption. It does not prove manifest execution, physical hardware identity, complete MCP/OAuth conformance, or business completion after consumption. Phase A establishes only the consistency of its abstract synthetic illustration. Explicit development runs retain development assurance regardless of other tests passing.
+A passing integrated run supports enrolled software-TPM evidence at HTTP issuance and MCP resource-side confinement and atomic consumption. It does not prove manifest execution, physical hardware identity, complete MCP/OAuth conformance, or business completion after consumption. Phase A's model establishes only internal consistency; its live regression establishes audience rejection, valid acceptance, and replay rejection under unchanged enforcement. Neither establishes successful unauthorized forwarding. Explicit development runs retain development assurance regardless of other tests passing.

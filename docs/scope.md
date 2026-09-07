@@ -47,7 +47,11 @@ cA2A and cMCP are not dependencies of this implementation. The released cA2A `0.
 
 ## Demonstration limits
 
-Phase A evaluates an abstract predicate over synthetic grant and request records. The disabled predicate accepts; the enabled predicate requires equality and rejects the differing request. This is a counterfactual decision model with no network activity or resource action. It is not a runnable vulnerable service or a reproduction of an upstream vulnerability.
+Phase A has two distinct checks. Its abstract predicate compares synthetic grant and request records: the disabled predicate accepts, while the enabled predicate requires equality and rejects the differing request. That counterfactual model performs no network activity or resource action.
+
+Its request-level regression uses the released MCP client against the actual reference proxy and resource on loopback, with temporary development enrollment and enforcement always enabled. Capability-audience and invocation-audience mismatches are rejected before handler dispatch or identifier consumption. The valid original request succeeds and replay fails. The capability case signs different audience claims under a generated fixture issuer key while preserving the identifier; the invocation case retains the original issued capability. The fixture key is used only by the test harness, and service issuance accepts no caller-selected audience.
+
+These tests establish live rejection and valid acceptance, not successful unauthorized forwarding, disabled service enforcement, an OAuth forwarding failure, or an upstream vulnerability. The bearer observation covers the registered synthetic proxy credential only. The development regression does not use TPM evidence or modify the separate Compose registration.
 
 Phase B uses the running services with confinement enabled. Generated registration keys and one synthetic object are sufficient for the procedure. No private AgenTrust security material, unpublished advisory detail, operational credential, or third-party test target belongs in this repository.
 

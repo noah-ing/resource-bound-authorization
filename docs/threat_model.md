@@ -84,7 +84,9 @@ At-most-once redemption is an availability tradeoff. A crash after consumption a
 
 ## Demonstration boundary
 
-Phase A evaluates an inert counterfactual predicate over synthetic grant and request records. Its disabled predicate accepts; its enabled predicate compares the records and rejects their mismatch. It does not provide an insecure HTTP route, forward a live bearer credential, execute a resource action, or test a third-party endpoint. Its expected counterfactual result is not evidence of a defect in any released dependency.
+Phase A's counterfactual model evaluates synthetic grant and request records. Its disabled predicate accepts; its enabled predicate compares the records and rejects their mismatch. That model has no network activity or resource action, and its expected result is not evidence of a defect in any released dependency.
+
+The separate Phase A request regression uses actual proxy and resource HTTP services with enforcement unchanged. It isolates signed capability-audience and invocation-audience mismatches, checks rejection before consumption and dispatch, then verifies the valid original request succeeds once. Generated test issuer keys permit a signed negative fixture without adding caller-selected issuance policy to the service. An observation wrapper records downstream MCP traffic and delegates every request to the original handler. This establishes rejection under confinement, not successful unauthorized forwarding or OAuth grant confusion. All records and services are local test fixtures.
 
 Phase B and every running service enforce the acceptance requirements. No runtime switch disables those requirements.
 
