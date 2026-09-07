@@ -1,0 +1,103 @@
+name: resource-bound-authorization
+
+x-reference: &reference
+  image: resource-bound-authorization:reference
+  build: .
+  init: true
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  pids_limit: 64
+  mem_limit: 256m
+  tmpfs:
+    - /tmp:mode=1777,noexec,nosuid,size=64m
+  environment:
+    REFERENCE_LISTEN_ADDRESS: 0.0.0.0
+    RESOURCE_AUTHORIZATION_REGISTRATION: /registration
+
+x-health: &health
+  test: [CMD, python, -c, "import http.client; connection = http.client.HTTPConnection('127.0.0.1',8000,timeout=2); connection.request('GET','/health'); assert connection.getresponse().status == 200"]
+  interval: 1s
+  timeout: 3s
+  retries: 30
+  start_period: 3s
+
+services:
+  authorization_server:
+    <<: *reference
+    user: 10001:10001
+    command: [python, -m, examples.confined_redemption.service, authorization_server]
+    volumes:
+      - registration:/registration
+    healthcheck: *health
+
+  resource_server:
+    <<: *reference
+    user: 10002:10002
+    command: [python, -m, examples.confined_redemption.service, resource_server]
+    volumes:
+      - registration:/registration:ro
+      - redemption:/state
+    healthcheck: *health
+
+  authorization_proxy:
+    <<: *reference
+    user: 10003:10003
+    command: [python, -m, examples.confined_redemption.service, authorization_proxy]
+    volumes:
+      - registration:/registration:ro
+    depends_on:
+      resource_server:
+        condition: service_healthy
+    healthcheck: *health
+
+  calling_principal:
+    <<: *reference
+    user: 10004:10004
+    command: [python, -m, examples.confined_redemption.procedure]
+    volumes:
+      - registration:/registration:ro
+    depends_on:
+      authorization_server:
+        condition: service_healthy
+      resource_server:
+        condition: service_healthy
+      authorization_proxy:
+        condition: service_healthy
+      delegated_principal:
+        condition: service_healthy
+
+  delegated_principal:
+    <<: *reference
+    user: 10005:10005
+    command: [python, -m, examples.confined_redemption.service, delegated_principal]
+    volumes:
+      - registration:/registration:ro
+    depends_on:
+      authorization_proxy:
+        condition: service_healthy
+    healthcheck: *health
+
+  software_tpm:
+    <<: *reference
+    user: 10006:10006
+    profiles: [software_tpm]
+    command: [sh, scripts/start_software_tpm.sh]
+    tmpfs:
+      - /run/software-tpm:uid=10006,gid=10006,mode=0700,noexec,nosuid,size=16m
+      - /tmp:mode=1777,noexec,nosuid,size=64m
+    healthcheck:
+      test: [CMD, python, -c, "import socket; socket.create_connection(('127.0.0.1',2321),timeout=2).close()"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  registration:
+  redemption:
+
+networks:
+  default:
+    internal: true

@@ -1,0 +1,17 @@
+{
+  "description": "Synthetic counterfactual authorization records; no token or server is exercised.",
+  "grant": {
+    "audience": "resource_server",
+    "principal_identifier": "calling_principal",
+    "object_identifier": "reference_record",
+    "tool_name": "object.read",
+    "argument_digest": "reference_argument_digest"
+  },
+  "request": {
+    "audience": "resource_server",
+    "principal_identifier": "delegated_principal",
+    "object_identifier": "different_record",
+    "tool_name": "object.read",
+    "argument_digest": "different_argument_digest"
+  }
+}

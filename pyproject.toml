@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling==1.32.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "resource_bound_authorization"
+version = "0.1.0"
+description = "Independent reference implementation of resource-bound grant confinement"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Noah Ingwers"}]
+dependencies = [
+  "agent-manifest==0.12.0",
+  "cryptography==50.0.1",
+  "pydantic==2.13.5",
+  "rfc8785==0.1.4",
+]
+
+[project.optional-dependencies]
+verification = [
+  "bandit==1.9.4",
+  "build==1.6.0",
+  "coverage==7.16.0",
+  "detect-secrets==1.5.0",
+  "mypy==2.3.1",
+  "pip-audit==2.10.1",
+  "pytest==9.1.1",
+  "ruff==0.16.5",
+]
+
+[project.urls]
+Repository = "https://github.com/noah-ing/resource-bound-authorization"
+Issues = "https://github.com/noah-ing/resource-bound-authorization/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/resource_bound_authorization"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/fixtures", "/examples", "/docs", "/scripts", "/README.md", "/SECURITY.md", "/LICENSE", "/compose.yaml", "/Dockerfile", "/.dockerignore", "/.gitignore", "/pyproject.toml", "/uv.lock"]
+
+[tool.hatch.build]
+exclude = ["*.sqlite*", "*.pem", "*.key", "*.log", "/registration", "/dist", "/.venv", "/.coverage", "/.env", "/.env.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = "-ra --strict-config --strict-markers"
+markers = ["software_tpm: requires the optional software TPM service"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "RUF"]
+ignore = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+files = ["src/resource_bound_authorization"]
+
+[tool.coverage.run]
+branch = true
+source = ["resource_bound_authorization"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]

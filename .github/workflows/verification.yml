@@ -1,0 +1,71 @@
+name: Verification
+
+"on":
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verification:
+    name: Authorization and reproduction verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install pinned Python tooling
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.5"
+          python-version: "3.12"
+          enable-cache: false
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra verification
+      - name: Verify format and lint
+        run: |
+          uv run --frozen ruff format --check .
+          uv run --frozen ruff check .
+      - name: Verify static types
+        run: uv run --frozen mypy src examples fixtures scripts
+      - name: Verify tests and coverage
+        run: |
+          uv run --frozen coverage run -m pytest -m 'not software_tpm'
+          uv run --frozen coverage report
+      - name: Scan source and pinned dependencies
+        run: |
+          uv run --frozen bandit -q -r src examples fixtures scripts
+          uv run --frozen pip-audit --skip-editable --progress-spinner off
+      - name: Build and inspect distribution
+        run: |
+          uv build
+          uv run --frozen python scripts/verify_distribution.py
+      - name: Validate Compose and build pinned image
+        run: |
+          docker compose config --quiet
+          docker compose build authorization_server
+      - name: Provision temporary role credentials
+        run: >-
+          docker compose run --rm --no-deps --user 0
+          --cap-add CHOWN --cap-add FOWNER authorization_server
+          python -m examples.confined_redemption.registration --directory /registration
+      - name: Verify unauthorized forwarding decision model
+        run: >-
+          docker compose run --rm --no-deps calling_principal
+          python -m examples.unauthorized_forwarding.demonstration
+      - name: Verify confined HTTP redemption
+        run: docker compose up --abort-on-container-exit --exit-code-from calling_principal
+      - name: Verify genuine software TPM core flow
+        run: |
+          docker compose --profile software_tpm up -d --wait software_tpm
+          docker compose --profile software_tpm run --rm --no-deps \
+            -e RESOURCE_AUTHORIZATION_TPM_INTERFACE=swtpm:host=software_tpm,port=2321 \
+            calling_principal python -m pytest -q -p no:cacheprovider -m software_tpm
+      - name: Remove reference containers and generated state
+        if: always()
+        run: docker compose --profile software_tpm down --volumes
