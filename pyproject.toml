@@ -14,6 +14,7 @@ authors = [{name = "Noah Ingwers"}]
 dependencies = [
   "agent-manifest==0.12.0",
   "cryptography==50.0.1",
+  "mcp==2.1.1",
   "pydantic==2.13.5",
   "rfc8785==0.1.4",
 ]

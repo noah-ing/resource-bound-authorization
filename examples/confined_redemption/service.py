@@ -18,6 +18,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from examples.confined_redemption.attestation import (
+    AttestationRecord,
+    create_principal_attestation,
+)
 from examples.confined_redemption.configuration import (
     DEFAULT_DESTINATIONS,
     OBJECT_IDENTIFIER,
@@ -25,12 +29,17 @@ from examples.confined_redemption.configuration import (
     SERVICE_ROLES,
     resource_policy,
 )
+from examples.confined_redemption.mcp_protocol import (
+    create_mcp_tool_call,
+    decode_mcp_tool_result,
+    dispatch_mcp_request,
+    mcp_request_headers,
+)
 from examples.confined_redemption.registration import (
     load_principal_fixture,
     load_public_registration,
     load_role_private,
 )
-from fixtures.registration import create_development_attestation
 from resource_bound_authorization.attenuation import verify_attenuation_record
 from resource_bound_authorization.errors import AuthorizationError
 from resource_bound_authorization.forwarding import (
@@ -38,13 +47,21 @@ from resource_bound_authorization.forwarding import (
     reject_forwarded_bearer,
 )
 from resource_bound_authorization.issuance import issue_capability, verify_capability
-from resource_bound_authorization.models import CapabilityEnvelope, ResourceRequest
+from resource_bound_authorization.models import (
+    CapabilityEnvelope,
+    PrincipalBinding,
+    ResourceRequest,
+)
 from resource_bound_authorization.redemption import (
     RedemptionStore,
     create_invocation,
     redeem_capability,
 )
 from resource_bound_authorization.signatures import load_private_key
+from resource_bound_authorization.tpm_verification import (
+    SoftwareTPMAttestation,
+    verify_software_tpm_attestation,
+)
 from resource_bound_authorization.verification import (
     DevelopmentAttestation,
     verify_development_attestation,
@@ -61,6 +78,7 @@ _PATHS = frozenset(
         "/redemption",
         "/attestation",
         "/verification",
+        "/mcp",
     }
 )
 
@@ -141,8 +159,8 @@ def send_request(
 class IssuanceInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     challenge: str = Field(pattern=r"^[0-9a-f]{64}$")
-    calling_attestation: DevelopmentAttestation
-    delegated_attestation: DevelopmentAttestation | None = None
+    calling_attestation: AttestationRecord
+    delegated_attestation: AttestationRecord | None = None
 
 
 class AttestationInput(BaseModel):
@@ -177,6 +195,28 @@ class ReferenceApplication:
             else None
         )
 
+    def _verify_attestation(
+        self,
+        role: str,
+        evidence: DevelopmentAttestation | SoftwareTPMAttestation,
+        challenge: str,
+        now: int,
+    ) -> PrincipalBinding:
+        if evidence.assurance != self.public.assurance:
+            raise AuthorizationError("attestation_assurance_mismatch")
+        registration = self.public.registrations[role]
+        if isinstance(evidence, SoftwareTPMAttestation):
+            return verify_software_tpm_attestation(
+                registration,
+                self.public.tpm_trust[role],
+                evidence,
+                expected_challenge=challenge,
+                now=now,
+            )
+        return verify_development_attestation(
+            registration, evidence, expected_challenge=challenge, now=now
+        )
+
     def _issue(self, document: dict[str, Any]) -> dict[str, Any]:
         request = IssuanceInput.model_validate(document)
         now = int(time.time())
@@ -189,18 +229,18 @@ class ReferenceApplication:
             statements.append(request.delegated_attestation)
         if any(statement.expires_at > expiry for statement in statements):
             raise AuthorizationError("attestation_exceeds_challenge_validity")
-        principal = verify_development_attestation(
-            self.public.registrations["calling_principal"],
+        principal = self._verify_attestation(
+            "calling_principal",
             request.calling_attestation,
-            expected_challenge=request.challenge,
-            now=now,
+            request.challenge,
+            now,
         )
         delegated = (
-            verify_development_attestation(
-                self.public.registrations["delegated_principal"],
+            self._verify_attestation(
+                "delegated_principal",
                 request.delegated_attestation,
-                expected_challenge=request.challenge,
-                now=now,
+                request.challenge,
+                now,
             )
             if request.delegated_attestation is not None
             else None
@@ -219,10 +259,17 @@ class ReferenceApplication:
             validity_seconds=min(60, remaining),
             delegated_principal=delegated,
         )
-        return {"capability": capability.model_dump(mode="json"), "assurance": "development"}
+        return {
+            "capability": capability.model_dump(mode="json"),
+            "assurance": self.public.assurance,
+        }
 
     def _forward(
-        self, document: dict[str, Any], headers: Mapping[str, str]
+        self,
+        document: dict[str, Any],
+        headers: Mapping[str, str],
+        *,
+        mcp_transport: bool = False,
     ) -> tuple[int, dict[str, Any]]:
         request = ResourceRequest.model_validate(document)
         principal = request.invocation.claims.principal_identifier
@@ -237,6 +284,18 @@ class ReferenceApplication:
         outgoing_headers, outgoing_body = build_forwarding_request(request, headers)
         if any(credential.encode() in outgoing_body for credential in credentials.values()):
             raise AuthorizationError("credential_reflection_rejected")
+        if mcp_transport:
+            document = create_mcp_tool_call(ResourceRequest.model_validate_json(outgoing_body))
+            status, response = send_request(
+                "resource_server",
+                "/mcp",
+                document,
+                mcp_request_headers(document),
+                destinations=self.destinations,
+            )
+            return decode_mcp_tool_result(
+                status, response, expected_request_identifier=document["id"]
+            )
         return send_request(
             "resource_server",
             "/redemption",
@@ -244,6 +303,23 @@ class ReferenceApplication:
             outgoing_headers,
             destinations=self.destinations,
         )
+
+    def _redeem(
+        self, request: ResourceRequest, headers: Mapping[str, str]
+    ) -> tuple[int, dict[str, Any]]:
+        reject_forwarded_bearer(headers)
+        if self.store is None:
+            raise RuntimeError("resource_store_not_initialized")
+        redemption = redeem_capability(request, self.policy, self.store, headers=headers)
+        with self.lock:
+            self.handler_count += 1
+        return 200, {
+            "redemption": redemption.model_dump(mode="json"),
+            "result": {
+                "record_identifier": OBJECT_IDENTIFIER,
+                "content": "synthetic reference object",
+            },
+        }
 
     def handle(
         self, method: str, path: str, document: dict[str, Any], headers: Mapping[str, str]
@@ -253,6 +329,18 @@ class ReferenceApplication:
         if method == "GET" and path == "/verification" and self.role == "resource_server":
             with self.lock:
                 return 200, {"handler_invocations": self.handler_count}
+        if path == "/mcp" and self.role in {"resource_server", "authorization_proxy"}:
+            if method != "POST":
+                return 405, {"error": "mcp_post_required"}
+
+            def execute(request: ResourceRequest) -> tuple[int, dict[str, Any]]:
+                if self.role == "authorization_proxy":
+                    return self._forward(
+                        request.model_dump(mode="json"), headers, mcp_transport=True
+                    )
+                return self._redeem(request, headers)
+
+            return dispatch_mcp_request(document, execute, headers=headers)
         if method != "POST":
             return 404, {"error": "unknown_reference_route"}
         if self.role == "authorization_server" and path == "/challenge":
@@ -273,27 +361,14 @@ class ReferenceApplication:
         if self.role == "authorization_proxy" and path == "/forwarding":
             return self._forward(document, headers)
         if self.role == "resource_server" and path == "/redemption":
-            reject_forwarded_bearer(headers)
-            if self.store is None:
-                raise RuntimeError("resource_store_not_initialized")
-            redemption = redeem_capability(
-                ResourceRequest.model_validate(document), self.policy, self.store, headers=headers
-            )
-            with self.lock:
-                self.handler_count += 1
-            return 200, {
-                "redemption": redemption.model_dump(mode="json"),
-                "result": {
-                    "record_identifier": OBJECT_IDENTIFIER,
-                    "content": "synthetic reference object",
-                },
-            }
+            return self._redeem(ResourceRequest.model_validate(document), headers)
         if self.role == "delegated_principal" and path == "/attestation":
             request = AttestationInput.model_validate(document)
             if not int(time.time()) < request.expires_at <= int(time.time()) + 60:
                 raise AuthorizationError("invalid_attestation_validity")
-            statement = create_development_attestation(
-                load_principal_fixture(self.directory, self.role),
+            statement = create_principal_attestation(
+                self.directory,
+                self.role,
                 request.challenge,
                 request.expires_at,
             )
@@ -307,12 +382,19 @@ class ReferenceApplication:
                 raise AuthorizationError("delegated_principal_mismatch")
             fixture = load_principal_fixture(self.directory, self.role)
             invocation = create_invocation(capability, fixture.holder_private_key)
-            return send_request(
+            document = create_mcp_tool_call(invocation)
+            status, response = send_request(
                 "authorization_proxy",
-                "/forwarding",
-                invocation.model_dump(mode="json"),
-                {"Authorization": "Bearer " + self.private["proxy_bearer_credential"]},
+                "/mcp",
+                document,
+                {
+                    **mcp_request_headers(document),
+                    "Authorization": "Bearer " + self.private["proxy_bearer_credential"],
+                },
                 destinations=self.destinations,
+            )
+            return decode_mcp_tool_result(
+                status, response, expected_request_identifier=document["id"]
             )
         return 404, {"error": "unknown_reference_route"}
 
@@ -409,6 +491,9 @@ class ReferenceRequestHandler(BaseHTTPRequestHandler):
         self._handle()
 
     def do_GET(self) -> None:
+        self._handle()
+
+    def do_DELETE(self) -> None:
         self._handle()
 
 

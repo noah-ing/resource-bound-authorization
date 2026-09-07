@@ -6,7 +6,7 @@ The protected operation is `object.read` on one synthetic object. The reference 
 
 For the tested configuration, successful verification can establish that the resource authenticated the capability and invocation proof, enforced the recorded principal and action bindings, and consumed the root capability identifier at most once before handler dispatch. It does not establish physical hardware provenance, principal execution, key residency, principal and attester co-location, runtime integrity, confidentiality, or exactly-once business execution.
 
-The default HTTP evidence, `assurance="development"`, is an ephemeral Ed25519-signed attestation record. It is not a TPM quote. Released Agent Manifest verification authenticates the configured signed manifest; neither a signed manifest nor this development evidence proves that an agent executed the manifest. The optional software-TPM procedure has a separate, isolated core boundary described below.
+The recommended HTTP enrollment requires genuine software-TPM quotes from separately enrolled caller and delegate keys. Released Agent Manifest verifies each manifest and quote at issuance. Explicit development enrollment instead uses ephemeral Ed25519-signed records and makes no TPM claim. Enrollment fixes the required assurance; missing simulator access cannot cause a development fallback. Neither evidence profile proves that an agent executed the manifest.
 
 ## Assets and objectives
 
@@ -29,9 +29,9 @@ The proxy shall omit inbound bearer credentials from its downstream request and 
 The reference trusts:
 
 - authorization-server and resource-server code, configuration, and hosts;
-- the configured issuer, manifest signer, registered principal, and development attestation verification keys;
+- the configured issuer, manifest signer, registered principal, and enrolled attestation verification keys and trust roots;
 - private-key secrecy, signature implementations, canonical serialization, and the randomness source;
-- the released Agent Manifest verifier and pinned runtime dependencies;
+- the released Agent Manifest verifier, MCP SDK protocol validation, and pinned runtime dependencies;
 - the resource's clock and configured validity policy;
 - SQLite transaction and uniqueness guarantees, persistent store integrity, and the operating system's storage behavior; and
 - a topology in which the protected handler is reachable only after resource-side verification and consumption.
@@ -48,17 +48,17 @@ The capability's fixed `authorizing_principal` label `user` is synthetic context
 
 ## Issuance boundary
 
-Agent Manifest `0.12.0` verifies the signed manifest against the configured signer. The authorization server checks the registered principal binding and the development attestation record before issuing a capability. The capability signature covers the resource, action, original principal binding, and permitted delegation.
+Agent Manifest `0.12.0` verifies the signed manifest against the configured signer. Under software-TPM enrollment, the authorization server verifies the quote against the server-selected principal's AK, chain, root, and expected composite PCR digest. It checks both caller and delegate evidence before granting delegation. The capability signature covers the resource, action, original principal binding, and permitted delegation.
 
-The development attestation key is a fixture trust root. Its signature authenticates the record under that key; it does not establish measured platform state or a TPM attestation key. This distinction remains visible in the evidence type and the [scope](scope.md).
+Under explicit development enrollment, an enrolled fixture key authenticates the signed record but establishes no TPM state. That record is rejected under software-TPM enrollment. This distinction remains visible in evidence types, policy, and the [scope](scope.md).
 
-The HTTP authorization server supplies and consumes the issuance challenge. The signed evidence binds that challenge, principal, holder public key, manifest digest, and expiry. Public registration pins the expected manifest signer, issuer, artifact expectations, and principal and attestation keys. Issuance depends on successful verification under those configured values.
+The HTTP authorization server supplies and consumes the issuance challenge. The signed evidence binds that challenge, principal, holder public key, manifest digest, and expiry. Public registration pins the expected manifest signer, issuer, artifact expectations, principal keys, assurance, and attestation trust. After verification, issuance rechecks freshness while holding the challenge lock, consumes the challenge once, and bounds capability expiry by the evidence validity. Request evidence cannot replace enrollment.
 
-## Optional software-TPM boundary
+## Software-TPM boundary
 
-The isolated software-TPM procedure generates an attestation key in the simulator and a synthetic test-CA certificate chain around that key. It uses released Agent Manifest verification for the quote signature, configured root, expected composite PCR digest, and qualifying data. The qualifying data commits to a fresh challenge, principal, holder public key, signed manifest digest, and expiry. The procedure checks freshness before issuing a capability from the resulting `software_tpm` binding, then performs direct core redemption and rejects repeat use.
+Registration generates separate caller and delegate attestation keys in the simulator and synthetic test-CA certificate chains around those keys. During HTTP issuance, released verification checks the enrolled root, quote signature, expected composite PCR digest, and qualifying data. The qualifying data commits to a fresh challenge, principal, holder public key, signed manifest digest, and expiry. Direct and delegated redemption use the resulting signed `software_tpm` bindings.
 
-This procedure adds the simulator, synthetic CA, fixed TPM command tools, and quote verifier to its trusted computing base. It does not change the HTTP services' development assurance and does not exercise TPM-backed delegation. The synthetic chain does not establish manufacturer enrollment or physical hardware provenance. The holder key is not shown to reside in the TPM or beside it. Independent PCR-selection appraisal, workload execution, and runtime integrity are outside this procedure's claim.
+This procedure adds the simulator, synthetic CA enrollment, fixed TPM command tools, and quote verifier to its trusted computing base. Per-role filesystem permissions separate saved AK contexts; a shared read-only lock serializes simulator operations. These controls do not isolate principals from a compromised simulator or host. The synthetic chain establishes neither manufacturer enrollment nor physical hardware provenance. The holder key is not shown to reside in or beside the TPM. Independent PCR-selection appraisal, workload execution, and runtime integrity remain outside the claim.
 
 ## Delegation boundary
 
@@ -72,7 +72,9 @@ The resource performs signature, audience, principal, attenuation, and action ch
 
 The proxy authenticates the registered bearer credential and builds a downstream request from the reference capability and invocation fields. It omits inbound authorization headers and checks the serialized body and decoded object names and string values for the known inbound credential before forwarding the checked record. The resource independently rejects `Authorization` and `Proxy-Authorization` headers. This excludes known credential reflection, including JSON string escaping; it does not establish the origin of arbitrary unknown or transformed credential bytes.
 
-The service adapter exposes bounded HTTP JSON at `/issuance`, `/forwarding`, and `/redemption` for `object.read`. It is not a complete MCP transport or OAuth implementation. No compatibility, defect, or remediation claim about released MCP authorization services follows from these checks.
+Both proxy and resource accept MCP `2026-07-28` discovery, listing, and tool calls at `/mcp`. SDK validation checks protocol metadata and mirrored headers. The adapter requires the outer tool and arguments to match the invocation in namespaced authorization metadata before invoking the enforcing callback. Proxy forwarding constructs fresh downstream metadata, omits inbound credentials, and correlates responses to fresh request identifiers. Present Origin headers must match an explicit allowlist; none are allowed by default. Discovery and listing are public, while every tool call requires reference authorization.
+
+The profile uses single JSON responses and local capability authorization. It does not implement OAuth, authorization-code flows, DCR, or full MCP conformance. Bounded JSON issuance and coordination endpoints remain local reference interfaces. The tests make no defect or remediation claim about another project's authorization service.
 
 ## At-most-once boundary
 
@@ -90,6 +92,6 @@ Phase B and every running service enforce the acceptance requirements. No runtim
 
 The internal Compose network publishes no host ports, but service traffic is HTTP without TLS. This is a local verification topology, not a confidentiality or production-network boundary. Running services have distinct user IDs, read-only container filesystems, and all capabilities dropped. One-shot registration uses root with scoped ownership capabilities to create role-owned private records. These controls do not protect against a compromised host administrator or establish container isolation against all threats.
 
-Registration keys are ephemeral demonstration material. Ordinary shutdown preserves them and the persistent consumption store. Removing the reference's registration and redemption volumes deletes both; provisioning a new run creates new keys. Consumption-store deletion while old keys remain trusted is outside the at-most-once assumption. Secure production enrollment, transport authentication, key rotation, revocation, rate limiting, denial-of-service resistance, administrative controls, and operational recovery are not implemented assurance claims.
+Registration keys are ephemeral demonstration material. Ordinary shutdown preserves files and the consumption store, but stopping or recreating the simulator can invalidate saved AK contexts. Repeat the complete cleanup and fresh enrollment procedure for another run. Removing this reference's registration and redemption volumes deletes both; new provisioning creates new keys. Consumption-store deletion while old keys remain trusted is outside the at-most-once assumption. Production enrollment, transport authentication, rotation, revocation, denial-of-service resistance, administrative controls, and operational recovery are not implemented assurance claims.
 
 All examples use synthetic objects and generated registration material. This repository neither includes private security reports nor establishes the status of upstream security findings.

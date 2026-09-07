@@ -14,6 +14,6 @@ This reference implementation has no bug-bounty program, response-time service-l
 
 ## Reference material
 
-Demonstrations use generated registration keys and synthetic records. Phase A evaluates an inert counterfactual predicate, and all running services enforce confinement. Development attestation records must not be presented as TPM quotes or hardware-backed identity. The optional genuine software-TPM quote procedure uses synthetic enrollment and a separate direct-core path; it does not change the HTTP services' development assurance.
+Demonstrations use generated registration keys and synthetic records. Phase A evaluates an inert counterfactual predicate, and all running services enforce confinement. The recommended HTTP issuance procedure verifies genuine simulator quotes for caller and delegate under synthetic enrollment, followed by resource-side MCP redemption. This does not establish physical hardware provenance, holder-key residency, or manifest execution. Explicit development enrollment uses signed software records with no TPM assurance; these records cannot satisfy a software-TPM enrollment. OAuth and DCR are not implemented.
 
 Reports concerning another project should follow that project's private reporting policy. This repository is not a publication channel for unpublished upstream security findings.

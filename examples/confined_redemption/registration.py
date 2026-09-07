@@ -16,12 +16,14 @@ from examples.confined_redemption.configuration import (
     ROLE_IDENTIFIERS,
     PublicConfiguration,
 )
+from examples.confined_redemption.tpm_registration import enroll_principal_tpm
 from fixtures.registration import RegistrationFixture, generate_registration_fixture
 from resource_bound_authorization.signatures import (
     load_private_key,
     private_key_hex,
     public_key_hex,
 )
+from resource_bound_authorization.tpm_verification import SoftwareTPMTrust
 
 
 def _write_new_json(path: Path, document: dict[str, Any], mode: int, owner: int | None) -> None:
@@ -35,7 +37,7 @@ def _write_new_json(path: Path, document: dict[str, Any], mode: int, owner: int 
 
 
 def provision_registration(
-    directory: Path, *, assign_ownership: bool = True
+    directory: Path, *, assign_ownership: bool = True, software_tpm_interface: str | None = None
 ) -> PublicConfiguration:
     """An empty mount is allowed; any existing enrollment contents stop provisioning."""
 
@@ -48,10 +50,10 @@ def provision_registration(
     fixtures = {role: generate_registration_fixture(role) for role in PRINCIPAL_ROLES}
     issuer_key = Ed25519PrivateKey.generate()
     bearer_credentials = {role: secrets.token_urlsafe(32) for role in PRINCIPAL_ROLES}
-    public = PublicConfiguration(
-        issuer_public_key=public_key_hex(issuer_key),
-        registrations={role: fixture.registration for role, fixture in fixtures.items()},
-    )
+    tpm_trust: dict[str, SoftwareTPMTrust] = {}
+    if software_tpm_interface is not None:
+        lock_path = directory / "tpm.lock"
+        lock_path.touch(mode=0o444, exist_ok=False)
     for role, user_identifier in ROLE_IDENTIFIERS.items():
         role_directory = directory / role
         role_directory.mkdir(mode=0o700)
@@ -69,8 +71,25 @@ def provision_registration(
                 "proxy_bearer_credential": bearer_credentials[role],
             }
         _write_new_json(role_directory / "private.json", private, 0o600, owner)
+        if software_tpm_interface is not None and role in PRINCIPAL_ROLES:
+            tpm_trust[role] = enroll_principal_tpm(
+                fixtures[role].registration,
+                role_directory,
+                software_tpm_interface,
+                lock_path=directory / "tpm.lock",
+            )
+            for artifact in role_directory.iterdir():
+                artifact.chmod(0o600)
+                if owner is not None:
+                    os.chown(artifact, owner, owner)
         if owner is not None:
             os.chown(role_directory, owner, owner)
+    public = PublicConfiguration(
+        issuer_public_key=public_key_hex(issuer_key),
+        registrations={role: fixture.registration for role, fixture in fixtures.items()},
+        assurance="software_tpm" if software_tpm_interface is not None else "development",
+        tpm_trust=tpm_trust,
+    )
     _write_new_json(directory / "public.json", public.model_dump(mode="json"), 0o644, None)
     return public
 
@@ -103,11 +122,14 @@ def load_principal_fixture(directory: Path, role: str) -> RegistrationFixture:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", type=Path, default=Path("/registration"))
+    parser.add_argument("--software-tpm-interface")
     arguments = parser.parse_args()
     if os.geteuid() != 0:
         raise SystemExit("registration provisioning must run as root")
-    provision_registration(arguments.directory)
-    print('{"registration":"created","assurance":"development"}')
+    public = provision_registration(
+        arguments.directory, software_tpm_interface=arguments.software_tpm_interface
+    )
+    print(json.dumps({"registration": "created", "assurance": public.assurance}))
 
 
 if __name__ == "__main__":

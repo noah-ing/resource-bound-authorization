@@ -2,7 +2,7 @@
 
 ## Assurance target
 
-Review whether the resource enforces the capability's audience, object, action, principal, attenuation, and invocation-proof requirements before handler dispatch, and whether competing uses consume the root capability identifier at most once. Distinguish the default development HTTP path, the inert counterfactual decision model, and the optional isolated software-TPM core procedure.
+Review whether HTTP issuance verifies the registered caller and delegate quotes, and whether MCP resource calls enforce the capability's audience, object, action, principal, attenuation, and invocation proof before atomic redemption and handler dispatch. Distinguish the recommended software-TPM procedure, explicit development tests, and inert Phase A model.
 
 Read [scope](scope.md) and the [threat model](threat_model.md) first. A passing command supports only the commit and configuration actually checked. Record the commit identifier, environment, commands, and results with any review report.
 
@@ -12,14 +12,17 @@ Read [scope](scope.md) and the [threat model](threat_model.md) first. A passing 
 | --- | --- |
 | `src/resource_bound_authorization/issuance.py` | Does issuance require the accepted manifest and principal binding before signing the complete capability? |
 | `src/resource_bound_authorization/verification.py` | Are signatures and evidence verified against configured keys, with a visible development-profile boundary? |
+| `src/resource_bound_authorization/tpm_verification.py` | Does quote verification use the issuer's enrolled AK, chain, root, PCR digest, challenge, and complete principal binding? |
 | `src/resource_bound_authorization/audience.py` | Is the intended resource enforced independently of the proxy address? |
 | `src/resource_bound_authorization/attenuation.py` | Does the original principal authorize only the permitted delegate and issued action? |
 | `src/resource_bound_authorization/redemption.py` | Are all checks completed and the root identifier consumed atomically before handler invocation? |
 | `src/resource_bound_authorization/forwarding.py` | Are inbound credentials omitted and known reflected values rejected before the checked record is forwarded? |
 | `examples/unauthorized_forwarding/` | Does Phase A only evaluate a predicate over synthetic records, without network requests or resource actions? |
 | `examples/confined_redemption/service.py` | Does the HTTP resource route verify and consume before handler dispatch, independently of proxy checks? |
+| `examples/confined_redemption/mcp_protocol.py` | Are protocol metadata and headers validated, outer tool arguments matched to the signed invocation, and responses correlated to fresh request identifiers? |
+| `examples/confined_redemption/attestation.py` | Does enrollment determine the evidence profile, without a development fallback? |
 | `examples/confined_redemption/registration.py` | Are fresh private records assigned to distinct role users, with existing enrollment protected from overwrite? |
-| `examples/confined_redemption/software_tpm_verification.py` | Does the optional direct-core path use a genuine quote and the released verifier, with its synthetic-enrollment limits explicit? |
+| `examples/confined_redemption/tpm_registration.py` | Are separate AK contexts enrolled for each principal, private and read-only during quotation, with serialized simulator access? |
 | `fixtures/` | Are private keys generated for the procedure, and are records explicitly synthetic? |
 | `compose.yaml` | Are service ports unpublished, the network internal, and running services confined to distinct users with capabilities dropped? |
 | `.github/workflows/verification.yml` | Does CI execute the documented verification commands and report failures? |
@@ -42,7 +45,9 @@ Follow the handler call site as well as the verifier. A correct verifier is insu
 
 For each rejection, inspect the dispatch or handler-count assertion rather than relying only on an error message. Replay tests should use a validly issued capability. Concurrency evidence should cover independently valid invocation proofs sharing one root identifier, including direct and delegated redemption where supported.
 
-The optional `test_real_software_tpm_quote_drives_direct_core_redemption` requires a real simulator interface. It is skipped when `RESOURCE_AUTHORIZATION_TPM_INTERFACE` is absent. An ordinary host-suite pass therefore does not establish execution of the software-TPM path.
+`test_software_tpm_http_issuance_and_mcp_delegation` requires a real simulator and exercises actual HTTP issuance, both principal quotes, MCP calls through proxy and resource, explicit attenuation, and assurance-downgrade rejection. `test_released_sdk_client_calls_running_proxy_and_resource` is parameterized for development and software-TPM enrollment and uses the released SDK over real loopback HTTP. `tests/test_tpm_enrollment.py` checks separate keys, read-only contexts, concurrent serialized quotation, and rejected mismatched evidence. The lower-level direct-core quote regression remains supplemental.
+
+Tests marked `software_tpm` are skipped without `RESOURCE_AUTHORIZATION_TPM_INTERFACE`. An ordinary host-suite pass does not establish that those paths ran. Inspect handler-count assertions and the evidence profile, not only success labels or mocked verification.
 
 ## Local verification
 
@@ -54,9 +59,11 @@ uv run --frozen coverage run -m pytest -m 'not software_tpm'
 uv run --frozen coverage report
 uv run --frozen ruff check .
 uv run --frozen ruff format --check .
-uv run --frozen mypy
-uv run --frozen bandit -q -r src
-uv run --frozen pip-audit
+uv run --frozen mypy src examples fixtures scripts
+uv run --frozen bandit -q -r src examples fixtures scripts
+uv run --frozen pip-audit --skip-editable
+uv build
+uv run --frozen python scripts/verify_distribution.py
 ```
 
 The host environment supports Python 3.12 or 3.13. Coverage measures both statements and branch opportunities over the library; its configured threshold applies to the combined percentage, not an independent branch-only floor. Refer to `pyproject.toml` for the enforced threshold.
@@ -70,28 +77,32 @@ Start from a clean checkout:
 ```sh
 docker compose config --quiet
 docker compose build authorization_server
-docker compose run --rm --no-deps --user 0 --cap-add CHOWN --cap-add FOWNER \
-  authorization_server python -m examples.confined_redemption.registration \
-  --directory /registration
-docker compose run --rm --no-deps calling_principal \
-  python -m examples.unauthorized_forwarding.demonstration
-docker compose up --abort-on-container-exit --exit-code-from calling_principal
+docker compose --profile software_tpm up -d --wait software_tpm
 ```
 
-The registration command creates disposable private keys and signed fixture records. Root and the two added ownership capabilities are limited to that one-shot command; running services have separate user IDs and all capabilities dropped. Registration refuses to overwrite existing enrollment. Phase A evaluates only an abstract decision predicate. Phase B exercises the running authorization, proxy, resource, and delegated-principal paths.
-
-Inspect command exit statuses and phase assertions. Phase A expects acceptance under its disabled predicate and rejection when record equality is required. Phase B expects three handler invocations from the permitted calls, while repeat use, changed arguments, and bearer headers at the resource are rejected. Do not treat a successful image build or an HTTP health response as evidence that the confinement procedure passed.
-
-Run the optional software-TPM procedure separately:
+For the full CI audit, run standalone simulator tests **before** demonstration enrollment. Their fixtures reset PCR state and must not run against an already enrolled demonstration:
 
 ```sh
-docker compose --profile software_tpm up -d --wait software_tpm
 docker compose --profile software_tpm run --rm --no-deps \
-  -e RESOURCE_AUTHORIZATION_TPM_INTERFACE=swtpm:host=software_tpm,port=2321 \
-  calling_principal python -m examples.confined_redemption.software_tpm_verification
+  calling_principal python -m pytest -q -p no:cacheprovider -m software_tpm
 ```
 
-The expected result identifies `isolated_software_tpm_core_redemption`, verified manifest and quote, synthetic enrollment, accepted direct redemption, rejected repeat redemption, and `http_services_integrated: false`. The procedure generates a fresh simulator AK and synthetic chain, commits its principal and holder binding to the quote's qualifying data, and uses the released quote verifier. It checks an expected composite PCR digest; it does not independently appraise PCR-selection policy. TPM evidence is not integrated into HTTP issuance or delegated redemption.
+Enroll fresh keys, then run both phases:
+
+```sh
+docker compose run --rm --no-deps --user 0 --cap-add CHOWN --cap-add FOWNER \
+  authorization_server python -m examples.confined_redemption.registration \
+  --directory /registration --software-tpm-interface swtpm:host=software_tpm,port=2321
+docker compose run --rm --no-deps calling_principal \
+  python -m examples.unauthorized_forwarding.demonstration
+docker compose --profile software_tpm up --abort-on-container-exit --exit-code-from calling_principal
+```
+
+Registration creates disposable holder and issuer keys, signed manifests, separate simulator AK contexts, and synthetic certificate enrollment. Root and the added ownership capabilities are limited to that one-shot command; running services use separate IDs and drop all capabilities. Registration refuses existing enrollment. Phase A is an abstract decision predicate. Phase B verifies caller and delegate quotes at HTTP issuance and exercises both MCP network hops.
+
+Inspect command exit statuses and assertions. Phase A expects acceptance under its disabled predicate and rejection when record equality is required. Phase B rejects mismatched manifest evidence and a development-assurance downgrade, then rejects changed arguments without invoking the handler. The original valid request succeeds, replay fails, and explicitly attenuated delegation succeeds. The output identifies `software_tpm` assurance for both principals, MCP protocol `2026-07-28`, and three authorized handler invocations. It also checks resource-bearer rejection. An image build or health response is not evidence that this procedure passed.
+
+The quote verifier checks the expected composite PCR digest and qualifying data under the enrolled AK. This does not establish independent PCR-selection appraisal, physical TPM provenance, key residency, or manifest execution. The MCP SDK checks establish the implemented transport and tool profile, not OAuth or full MCP conformance.
 
 Clean up only this disposable reference state:
 
@@ -99,16 +110,16 @@ Clean up only this disposable reference state:
 docker compose --profile software_tpm down --volumes
 ```
 
-An ordinary stop or `docker compose down` preserves the registration and consumption volumes. The command with `--volumes` deletes both for this reference, and the next provisioning creates new keys. Database deletion is permitted for the disposable procedure; it does not preserve replay protection under old trusted keys.
+The recommended Phase B command stops the simulator when the caller exits. Stopping or recreating that disposable simulator can invalidate saved contexts. For another run, use the scoped cleanup and repeat the full preparation and enrollment procedure. An ordinary stop preserves registration files and consumption state, but not guaranteed usable TPM contexts. Deleting consumption state does not preserve replay protection under old trusted keys; the clean demonstration instead generates new keys.
 
 The Dockerfile pins the Python base image by digest and installs the committed Python lock. Debian packages resolve from the configured distribution repositories, and the version-pinned `uv` bootstrap is downloaded during the build. The procedure does not claim byte-identical images.
 
 ## Evidence and publication
 
-An audit record should identify the commit, dependency lock, evidence profile, commands completed, observed failures or skips, and whether Compose ran. Distinguish source review, unit tests, HTTP service integration, and the optional genuine-quote core procedure. Do not infer execution of an unrun path from successful compilation or mocks. A genuine quote in the isolated helper does not upgrade the HTTP path's assurance label.
+An audit record should identify the commit, dependency lock, evidence profile, commands, failures or skips, and whether Compose ran. Distinguish source review, mocked verifier tests, real SDK loopback tests, actual quote tests, and the complete Compose procedure. The lower-level isolated helper alone does not establish HTTP or delegation integration; require the integrated test and phase output for those claims.
 
 Inspect distributable files for generated keys, local databases, private reports, unpublished security findings, and unrelated workspace material. Only synthetic fixture descriptions and the intended reference source belong in the public repository. A dependency's presence is not evidence of an upstream vulnerability, a remediation claim, or endorsement.
 
 ## Interpretation
 
-A passing confined-redemption run supports the configured resource's enforcement and atomic-consumption boundary. It does not upgrade the HTTP development evidence to a TPM quote, prove execution of a manifest, establish hardware-backed identity, or guarantee business completion after consumption. The first phase establishes only the consistency of its abstract synthetic illustration. A passing optional software-TPM procedure supports only its documented synthetic-enrollment and direct-core quote-verification boundary.
+A passing integrated run supports enrolled software-TPM evidence at HTTP issuance and MCP resource-side confinement and atomic consumption. It does not prove manifest execution, physical hardware identity, complete MCP/OAuth conformance, or business completion after consumption. Phase A establishes only the consistency of its abstract synthetic illustration. Explicit development runs retain development assurance regardless of other tests passing.

@@ -1,6 +1,6 @@
 # Resource-Bound Authorization
 
-This independent reference implementation confines use of one issued capability to one resource audience, one object, the `object.read` tool, and an exact argument digest. The resource server requires an issuer signature, a verified principal binding, any permitted second principal recorded by signed attenuation, and proof of possession by the effective holder; it consumes the root capability identifier atomically before invoking the handler. The proxy omits inbound bearer credentials and rejects their known value reflected in the outbound record; the resource rejects authorization headers. The default HTTP path uses an ephemeral development attestation record plus released Agent Manifest verification, not a TPM quote or hardware-rooted identity. An optional, isolated core procedure verifies a genuine software-TPM quote.
+This independent reference implementation confines use of one issued capability to one resource audience, one object, the `object.read` tool, and an exact argument digest. In the recommended Compose procedure, the HTTP authorization server verifies a signed Agent Manifest and a genuine software-TPM quote for each participating principal before issuance. MCP tool calls pass through the proxy to the resource, which verifies the issuer signature, principal binding, any signed attenuation, and effective holder proof; it consumes the root capability identifier atomically before invoking the handler. The proxy omits inbound bearer credentials and rejects known credential reflection; the resource rejects bearer headers on redemption.
 
 ## Scope
 
@@ -10,9 +10,9 @@ This is a reference implementation, not a product, identity provider, production
 
 [attested-capability-broker](https://github.com/noah-ing/attested-capability-broker) studies attested capability issuance; this repository studies confinement at the resource when a capability is used through a proxy or by a permitted second principal.
 
-Released [Agent Manifest](https://github.com/agentrust-io/agent-manifest) `0.12.0` verifies the signed manifest. The local capability, attenuation, and invocation-proof formats are reference protocols. Dependency names identify composition, not affiliation, endorsement, or a claim about an upstream defect.
+Released [Agent Manifest](https://github.com/agentrust-io/agent-manifest) `0.12.0` verifies signed manifests and TPM quotes. The [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) `2.1.1` and locked `mcp-types==2.1.1` supply protocol validation and client interoperability. The local capability, attenuation, and invocation-proof formats remain reference protocols. Dependency names identify composition, not affiliation, endorsement, or an upstream defect.
 
-The service adapter exposes bounded HTTP JSON requests at `/issuance`, `/forwarding`, and `/redemption` for the single tool. It does not implement a complete MCP transport or OAuth authorization flow.
+The proxy and resource expose `/mcp` with MCP `2026-07-28` `server/discover`, `tools/list`, and `tools/call`, using single JSON responses over Streamable HTTP. The signed authorization record travels in namespaced request metadata, separately from the exact tool arguments. Issuance and delegation coordination use bounded HTTP JSON. OAuth, authorization-code flows, DCR, and complete MCP conformance are outside this adapter's claim; see [scope](docs/scope.md).
 
 ## Reproduction procedure
 
@@ -21,9 +21,10 @@ Requirements: Docker Engine with Compose v2. The procedure requires no TPM hardw
 ```sh
 docker compose config --quiet
 docker compose build authorization_server
+docker compose --profile software_tpm up -d --wait software_tpm
 docker compose run --rm --no-deps --user 0 --cap-add CHOWN --cap-add FOWNER \
   authorization_server python -m examples.confined_redemption.registration \
-  --directory /registration
+  --directory /registration --software-tpm-interface swtpm:host=software_tpm,port=2321
 ```
 
 Run Phase A, the inert decision model:
@@ -36,19 +37,10 @@ docker compose run --rm --no-deps calling_principal \
 Run Phase B, confined redemption:
 
 ```sh
-docker compose up --abort-on-container-exit --exit-code-from calling_principal
+docker compose --profile software_tpm up --abort-on-container-exit --exit-code-from calling_principal
 ```
 
-Optionally verify a genuine software-TPM quote through direct core issuance and redemption:
-
-```sh
-docker compose --profile software_tpm up -d --wait software_tpm
-docker compose --profile software_tpm run --rm --no-deps \
-  -e RESOURCE_AUTHORIZATION_TPM_INTERFACE=swtpm:host=software_tpm,port=2321 \
-  calling_principal python -m examples.confined_redemption.software_tpm_verification
-```
-
-The optional procedure uses synthetic attestation-key enrollment. It does not integrate TPM evidence into the HTTP services or exercise TPM-backed delegation. The [scope](docs/scope.md) specifies its separate assurance boundary.
+Registration enrolls a separate simulator attestation key for the caller and delegate under synthetic certificate authorities. The issuer selects the enrolled key and expected PCR digest from its registry. Both principals must supply fresh quotes bound to the issuance challenge, manifest digest, holder key, and expiry. This establishes neither physical hardware provenance nor holder-key residency or manifest execution.
 
 Clean up the disposable reference state afterward:
 
@@ -58,7 +50,9 @@ docker compose --profile software_tpm down --volumes
 
 Registration generates fresh keys and assigns each service's private records to its own user ID. The one-shot initialization receives only the extra `CHOWN` and `FOWNER` capabilities needed to establish ownership; running services drop all capabilities. Registration refuses to overwrite existing enrollment.
 
-An ordinary stop or `docker compose down` preserves enrollment and the SQLite consumption store. The cleanup above deletes this reference's generated enrollment and consumption volumes; provisioning the next run creates new keys. Preserve the store for as long as its corresponding keys and capabilities are accepted. The Compose network is internal, publishes no host ports, and uses HTTP without TLS for local verification.
+Stopping or recreating the disposable simulator can invalidate saved attestation-key contexts, including after Phase B stops its containers. For another run, perform the cleanup above, then repeat the complete preparation procedure. Ordinary shutdown preserves registration files and SQLite state but does not promise usable simulator contexts. Preserve the consumption store for as long as its keys and capabilities are accepted. The Compose network is internal, publishes no host ports, and uses HTTP without TLS for local verification.
+
+An explicit development enrollment remains available for host tests: omit `--software-tpm-interface` when provisioning a fresh registration. It uses signed Ed25519 evidence and reports `assurance: development`. A software-TPM enrollment rejects that evidence and never falls back to it when the simulator is absent.
 
 For source review and Python verification:
 
@@ -68,9 +62,9 @@ uv run --frozen coverage run -m pytest -m 'not software_tpm'
 uv run --frozen coverage report
 uv run --frozen ruff check .
 uv run --frozen ruff format --check .
-uv run --frozen mypy
-uv run --frozen bandit -q -r src
-uv run --frozen pip-audit
+uv run --frozen mypy src examples fixtures scripts
+uv run --frozen bandit -q -r src examples fixtures scripts
+uv run --frozen pip-audit --skip-editable
 ```
 
 The [audit procedure](docs/audit_procedure.md) explains what each check can establish. These commands are a procedure, not a claim that a particular machine or commit has passed them. Advisory scanning depends on the current advisory database.
@@ -83,19 +77,19 @@ The regression test named `test_unauthorized_forwarding_demonstration_succeeds_w
 
 ## Phase B: confined redemption
 
-The authorization server verifies the configured signed Agent Manifest and development attestation binding before issuing an Ed25519-signed capability. The signed capability fixes the resource audience, object, tool, argument digest, original principal, and any permitted delegate. A second principal requires a signed attenuation record from the original principal and cannot enlarge the issued authority. The effective holder signs the invocation.
+The authorization server verifies the configured signed Agent Manifest and enrolled software-TPM quote before issuing an Ed25519-signed capability. It appraises both caller and delegate quotes when delegation is requested, then atomically consumes the fresh issuance challenge. The signed capability fixes the resource audience, object, tool, argument digest, original principal, and any permitted delegate. A second principal requires a signed attenuation record from the original principal and cannot enlarge the issued authority. The effective holder signs the invocation.
 
-The resource server verifies those bindings and consumes the root capability identifier in an SQLite transaction before dispatching `object.read`. Direct use and attenuated use share the same spend identifier. Independent valid proofs cannot redeem the same capability twice.
+Both network hops use MCP `tools/call`. The adapter checks that the outer tool name and arguments match the signed invocation carried in `params._meta["io.github.noah-ing/resource-bound-authorization"]`. The resource then verifies the capability bindings and consumes the root identifier in an SQLite transaction before dispatching `object.read`. Direct and attenuated use share that identifier. Independent valid proofs cannot redeem the same capability twice.
 
 The authorization proxy authenticates its registered bearer credential, constructs the downstream request without it, and rejects that known credential reflected in the outgoing serialized body or decoded string fields. The resource rejects `Authorization` and `Proxy-Authorization` headers and accepts only the reference capability with a valid invocation proof. This checks known credential reflection, not general token provenance.
 
 A process failure after the spend commit can consume a capability without completing the handler or returning a result. At-most-once redemption therefore does not imply exactly-once execution or guaranteed completion.
 
-The procedure expects direct and permitted delegated redemption to succeed, repeat redemption and changed arguments to be rejected, a bearer header at the resource to be rejected, and a valid request after those pre-consumption rejections to remain usable. It verifies three handler invocations and prints `assurance: development`.
+The procedure first rejects mismatched manifest evidence, a development-assurance downgrade, and changed arguments, and verifies that the handler count remains unchanged. The original granted arguments then succeed; repeat redemption is rejected. Explicit delegated redemption succeeds after both quotes and the attenuation record are verified. The final output reports three authorized handler invocations, `assurance: software_tpm`, and `protocol_version: 2026-07-28`. The audit also exercises the released MCP client against the running proxy and resource.
 
 ## Deferred work
 
-Payments, token commerce, multi-cloud federation, a general policy language, and a public authorization service are explicitly deferred. Hardware TPM enrollment, TPM integration into the HTTP and delegation paths, production transport and key management, additional delegation hops, and operational recovery also remain outside this reference implementation. See [scope](docs/scope.md) for the assurance boundary and dependency substitutions.
+Payments, token commerce, multi-cloud federation, a general policy language, and a public authorization service are explicitly deferred. OAuth and DCR integration, physical TPM enrollment, production transport and key management, additional delegation hops, and operational recovery also remain outside this reference. Phase A is an inert decision model rather than a runnable weak proxy. See [scope](docs/scope.md) for the assurance boundary and dependency substitutions.
 
 ## Security reporting and license
 

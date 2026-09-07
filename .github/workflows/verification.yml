@@ -49,23 +49,23 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose build authorization_server
+      - name: Verify software TPM enrollment and HTTP delegation
+        run: |
+          docker compose --profile software_tpm up -d --wait software_tpm
+          docker compose --profile software_tpm run --rm --no-deps \
+            calling_principal python -m pytest -q -p no:cacheprovider -m software_tpm
       - name: Provision temporary role credentials
         run: >-
           docker compose run --rm --no-deps --user 0
           --cap-add CHOWN --cap-add FOWNER authorization_server
           python -m examples.confined_redemption.registration --directory /registration
+          --software-tpm-interface swtpm:host=software_tpm,port=2321
       - name: Verify unauthorized forwarding decision model
         run: >-
           docker compose run --rm --no-deps calling_principal
           python -m examples.unauthorized_forwarding.demonstration
-      - name: Verify confined HTTP redemption
-        run: docker compose up --abort-on-container-exit --exit-code-from calling_principal
-      - name: Verify genuine software TPM core flow
-        run: |
-          docker compose --profile software_tpm up -d --wait software_tpm
-          docker compose --profile software_tpm run --rm --no-deps \
-            -e RESOURCE_AUTHORIZATION_TPM_INTERFACE=swtpm:host=software_tpm,port=2321 \
-            calling_principal python -m pytest -q -p no:cacheprovider -m software_tpm
+      - name: Verify attested MCP redemption and delegation
+        run: docker compose --profile software_tpm up --abort-on-container-exit --exit-code-from calling_principal
       - name: Remove reference containers and generated state
         if: always()
         run: docker compose --profile software_tpm down --volumes
