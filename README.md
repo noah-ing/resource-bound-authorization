@@ -27,11 +27,13 @@ docker compose run --rm --no-deps --user 0 --cap-add CHOWN --cap-add FOWNER \
   --directory /registration --software-tpm-interface swtpm:host=software_tpm,port=2321
 ```
 
-Run Phase A, the inert decision model:
+Run Phase A, the inert decision model and live request-confinement regression:
 
 ```sh
 docker compose run --rm --no-deps calling_principal \
   python -m examples.unauthorized_forwarding.demonstration
+docker compose run --rm --no-deps calling_principal \
+  python -m pytest -q -s -p no:cacheprovider tests/test_demonstration.py
 ```
 
 Run Phase B, confined redemption:
@@ -69,11 +71,17 @@ uv run --frozen pip-audit --skip-editable
 
 The [audit procedure](docs/audit_procedure.md) explains what each check can establish. These commands are a procedure, not a claim that a particular machine or commit has passed them. Advisory scanning depends on the current advisory database.
 
-## Phase A: unauthorized forwarding demonstration
+## Phase A: forwarding model and request confinement
 
-The first phase evaluates an abstract predicate over synthetic grant and request records. With confinement disabled, the predicate accepts the record; with confinement enabled, it requires the records to match and rejects the differing request. The expected output has `confinement_disabled: true` and `confinement_enabled: false`. It performs no network requests or resource actions, exposes no insecure service, and does not reproduce an upstream vulnerability. All running services retain their confinement checks.
+The first command evaluates an abstract predicate over synthetic grant and request records. With confinement disabled, the predicate accepts the record; with confinement enabled, it requires the records to match and rejects the differing request. The expected output has `confinement_disabled: true` and `confinement_enabled: false`. This model performs no network requests or resource actions. All running services retain their confinement checks.
 
 The regression test named `test_unauthorized_forwarding_demonstration_succeeds_when_confinement_disabled` checks the counterfactual fixture's expected decision. Its name refers to the fixture's modeled policy, not a service configuration that disables enforcement. A passing fixture check establishes only that the illustration remains internally consistent.
+
+The second command starts the real reference HTTP services on loopback inside the test container, using independent temporary development enrollment. The released MCP client sends `tools/call` through `authorization_proxy` to `resource_server`. Two cases isolate capability-audience and invocation-audience verification. Each sends a correctly signed negative fixture first, asserts `audience_mismatch`, and observes zero handler invocations and zero consumption rows. The original valid request then succeeds, and replay is rejected with exactly one handler invocation and one consumed identifier. The resource observation also verifies that the proxy's registered bearer is absent from downstream headers and body.
+
+The invocation case preserves the issued capability unchanged. The capability case uses the fixture issuer key to sign a different audience while preserving the identifier; its invocation audience remains correct so the root-audience check is tested independently. This is test-generated authorization material, not a facility exposed by the issuance service. Both cases report `assurance: development` and `confinement: enabled`. They use no simulator and do not alter the Compose enrollment.
+
+This is a live confinement regression, not successful unauthorized forwarding or a runnable disabled-policy comparison. Phase A does not reproduce an upstream vulnerability or an OAuth grant-confusion case.
 
 ## Phase B: confined redemption
 
@@ -89,7 +97,7 @@ The procedure first rejects mismatched manifest evidence, a development-assuranc
 
 ## Deferred work
 
-Payments, token commerce, multi-cloud federation, a general policy language, and a public authorization service are explicitly deferred. OAuth and DCR integration, physical TPM enrollment, production transport and key management, additional delegation hops, and operational recovery also remain outside this reference. Phase A is an inert decision model rather than a runnable weak proxy. See [scope](docs/scope.md) for the assurance boundary and dependency substitutions.
+Payments, token commerce, multi-cloud federation, a general policy language, and a public authorization service are explicitly deferred. OAuth and DCR integration, physical TPM enrollment, production transport and key management, additional delegation hops, and operational recovery also remain outside this reference. Phase A combines an inert counterfactual with live enforcement tests; it does not include a runnable weak proxy. See [scope](docs/scope.md) for the assurance boundary and dependency substitutions.
 
 ## Security reporting and license
 
