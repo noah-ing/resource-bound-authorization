@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -35,9 +36,15 @@ class ServiceHarness:
 
 
 @pytest.fixture
-def reference_services(tmp_path: Path) -> Iterator[ServiceHarness]:
+def reference_services(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[ServiceHarness]:
     directory = tmp_path / "registration"
-    provision_registration(directory, assign_ownership=False)
+    profile = getattr(request, "param", "development")
+    interface = None
+    if profile == "software_tpm":
+        interface = os.environ.get("RESOURCE_AUTHORIZATION_TPM_INTERFACE")
+        if not interface:
+            pytest.skip("RESOURCE_AUTHORIZATION_TPM_INTERFACE is not configured")
+    provision_registration(directory, assign_ownership=False, software_tpm_interface=interface)
     destinations: dict[str, tuple[str, int]] = {}
     servers: dict[str, ReferenceHTTPServer] = {}
     threads: list[threading.Thread] = []
@@ -74,6 +81,21 @@ def test_confined_redemption_http_procedure(reference_services: ServiceHarness) 
         reference_services.directory, destinations=reference_services.destinations
     )
     assert result["assurance"] == "development"
+    assert result["transport"] == "mcp_streamable_http"
+    assert reference_services.servers["resource_server"].application.handler_count == 3
+
+
+@pytest.mark.software_tpm
+@pytest.mark.parametrize("reference_services", ["software_tpm"], indirect=True)
+def test_software_tpm_http_issuance_and_mcp_delegation(reference_services: ServiceHarness) -> None:
+    result = run_procedure(
+        reference_services.directory, destinations=reference_services.destinations
+    )
+    assert result["assurance"] == "software_tpm"
+    assert result["caller_and_delegate_assurance"] == "software_tpm"
+    assert result["transport"] == "mcp_streamable_http"
+    assert result["delegated_redemption"] == "accepted"
+    assert {"request": "development_assurance_downgrade", "result": "rejected"} in result["events"]
     assert reference_services.servers["resource_server"].application.handler_count == 3
 
 

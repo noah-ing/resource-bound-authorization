@@ -8,6 +8,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from resource_bound_authorization.models import PrincipalBinding, ResourcePolicy
+from resource_bound_authorization.tpm_verification import SoftwareTPMTrust
 from resource_bound_authorization.verification import PrincipalRegistration
 
 OBJECT_IDENTIFIER = "reference_record"
@@ -37,6 +38,8 @@ class PublicConfiguration(BaseModel):
     schema_version: Literal[1] = 1
     issuer_public_key: str = Field(pattern=r"^[0-9a-f]{64}$")
     registrations: dict[str, PrincipalRegistration]
+    assurance: Literal["development", "software_tpm"] = "development"
+    tpm_trust: dict[str, SoftwareTPMTrust] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_registered_roles(self) -> Self:
@@ -44,6 +47,19 @@ class PublicConfiguration(BaseModel):
             raise ValueError("exactly_two_registered_principals_required")
         if any(role != entry.principal_identifier for role, entry in self.registrations.items()):
             raise ValueError("registration_role_mismatch")
+        if self.assurance == "software_tpm":
+            if set(self.tpm_trust) != set(PRINCIPAL_ROLES):
+                raise ValueError("exactly_two_tpm_enrollments_required")
+            for role, trust in self.tpm_trust.items():
+                registration = self.registrations[role]
+                if (
+                    trust.principal_identifier != role
+                    or trust.holder_public_key != registration.identity_public_key
+                    or trust.manifest_digest != registration.manifest_digest
+                ):
+                    raise ValueError("tpm_enrollment_registration_mismatch")
+        elif self.tpm_trust:
+            raise ValueError("tpm_enrollment_requires_software_tpm_assurance")
         return self
 
 
@@ -56,7 +72,7 @@ def resource_policy(configuration: PublicConfiguration) -> ResourcePolicy:
             manifest_digest=configuration.registrations[role].manifest_digest,
             holder_public_key=configuration.registrations[role].identity_public_key,
             attestation_digest=hashlib.sha256(f"enrollment:{role}".encode()).hexdigest(),
-            assurance="development",
+            assurance=configuration.assurance,
         )
         for role in PRINCIPAL_ROLES
     )

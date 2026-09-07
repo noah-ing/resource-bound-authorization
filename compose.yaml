@@ -16,6 +16,7 @@ x-reference: &reference
   environment:
     REFERENCE_LISTEN_ADDRESS: 0.0.0.0
     RESOURCE_AUTHORIZATION_REGISTRATION: /registration
+    RESOURCE_AUTHORIZATION_TPM_INTERFACE: swtpm:host=software_tpm,port=2321
 
 x-health: &health
   test: [CMD, python, -c, "import http.client; connection = http.client.HTTPConnection('127.0.0.1',8000,timeout=2); connection.request('GET','/health'); assert connection.getresponse().status == 200"]
