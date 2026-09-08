@@ -51,6 +51,14 @@ For each rejection, inspect the dispatch or handler-count assertion rather than 
 
 Tests marked `software_tpm` are skipped without `RESOURCE_AUTHORIZATION_TPM_INTERFACE`. An ordinary host-suite pass does not establish that those paths ran. Inspect handler-count assertions and the evidence profile, not only success labels or mocked verification.
 
+### Certificate evaluation time
+
+The adapter unit test in `tests/test_tpm_verification.py` explicitly checks the exact UTC `verification_time` forwarded to Agent Manifest. Its dispatch spy establishes argument forwarding, not quote verification.
+
+`tests/test_tpm_certificate_time.py` separately uses an actual simulator quote through `verify_software_tpm_attestation()` and the released verifier. At an injected UTC instant, it isolates the leaf and terminal root: expired, not-yet-valid, and exact-`notAfter` certificates must be rejected; exact-`notBefore` and just-before-`notAfter` controls must be accepted. The other certificate remains current, the enrolled AK and configured root match, and adjacent signatures remain valid. The same quote is reused across certificate-policy fixtures, not redeemed repeatedly or presented as fresh evidence for another challenge.
+
+These tests exercise Agent Manifest `0.12.0`'s inclusive `notBefore` and exclusive `notAfter` behavior, including its terminal-root time check. The fixed time applies to TPM certificate appraisal and evidence freshness; signed-manifest verification remains a separate wall-clock check. The two-certificate synthetic profile does not establish general PKIX validation, physical enrollment, or intermediate-chain coverage. No production verification behavior or assurance claim is changed by these regressions.
+
 ## Local verification
 
 Use the committed dependency lock:
