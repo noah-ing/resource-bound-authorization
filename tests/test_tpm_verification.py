@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import secrets
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -59,6 +60,10 @@ def test_adapter_passes_every_expected_binding_to_released_quote_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registration, trust, evidence = adapter_inputs
+    # Deliberately independent of wall time: dropping the injected clock must fail.
+    moment = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
+    now = int(moment.timestamp())
+    evidence = evidence.model_copy(update={"expires_at": now + 60})
     received: dict[str, Any] = {}
 
     def dispatch_spy(quote: bytes, signature: bytes, chain: bytes, **options: Any) -> bool:
@@ -67,8 +72,10 @@ def test_adapter_passes_every_expected_binding_to_released_quote_api(
 
     monkeypatch.setattr(tpm_verification, "verify_tpm_quote", dispatch_spy)
     binding = verify_software_tpm_attestation(
-        registration, trust, evidence, expected_challenge=evidence.challenge, now=int(time.time())
+        registration, trust, evidence, expected_challenge=evidence.challenge, now=now
     )
+    assert received["verification_time"] == moment
+    assert received["verification_time"].tzinfo is UTC
     assert received["quote"] == bytes.fromhex(evidence.quote_hex)
     assert received["signature"] == bytes.fromhex(evidence.signature_hex)
     assert received["chain"] == trust.ak_certificate_chain_pem.encode()
